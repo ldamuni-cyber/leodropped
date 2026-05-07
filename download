@@ -1,0 +1,164 @@
+import streamlit as st
+import re
+from db import get_connection
+
+st.set_page_config(page_title="Customers | leodropped", page_icon="🧢", layout="wide")
+st.title("👤 Manage Customers")
+
+EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+PHONE_REGEX = re.compile(r"^\d{10}$")
+
+# ── Add Customer Form ─────────────────────────────────────────────────────────
+with st.expander("➕ Add New Customer", expanded=False):
+    with st.form("add_customer"):
+        c1, c2 = st.columns(2)
+        first_name = c1.text_input("First Name *")
+        last_name = c2.text_input("Last Name *")
+        c3, c4 = st.columns(2)
+        email = c3.text_input("Email *")
+        phone = c4.text_input("Phone (10 digits, optional)", placeholder="5091234567")
+        submitted = st.form_submit_button("Add Customer")
+
+        if submitted:
+            errors = []
+            if not first_name.strip():
+                errors.append("First name is required.")
+            if not last_name.strip():
+                errors.append("Last name is required.")
+            if not email.strip():
+                errors.append("Email is required.")
+            elif not EMAIL_REGEX.match(email.strip()):
+                errors.append("Email must be a valid format (e.g. name@example.com).")
+            if phone.strip() and not PHONE_REGEX.match(phone.strip()):
+                errors.append("Phone must be exactly 10 digits (e.g. 5091234567).")
+
+            if errors:
+                for e in errors:
+                    st.error(e)
+            else:
+                try:
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    cur.execute(
+                        "INSERT INTO customers (first_name, last_name, email, phone) VALUES (%s, %s, %s, %s);",
+                        (first_name.strip(), last_name.strip(), email.strip().lower(), phone.strip() or None)
+                    )
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                    st.success(f"Customer added: {first_name} {last_name}")
+                    st.rerun()
+                except Exception as e:
+                    if "unique" in str(e).lower():
+                        st.error("That email address is already registered.")
+                    else:
+                        st.error(f"Error adding customer: {e}")
+
+# ── Search ────────────────────────────────────────────────────────────────────
+st.subheader("All Customers")
+search = st.text_input("🔍 Search by name or email")
+
+# ── Load & Display Customers ──────────────────────────────────────────────────
+try:
+    conn = get_connection()
+    cur = conn.cursor()
+    if search.strip():
+        cur.execute("""
+            SELECT id, first_name, last_name, email, phone, created_at
+            FROM customers
+            WHERE first_name ILIKE %s OR last_name ILIKE %s OR email ILIKE %s
+            ORDER BY last_name, first_name;
+        """, (f"%{search}%", f"%{search}%", f"%{search}%"))
+    else:
+        cur.execute("SELECT id, first_name, last_name, email, phone, created_at FROM customers ORDER BY last_name, first_name;")
+    customers = cur.fetchall()
+    cur.close()
+    conn.close()
+except Exception as e:
+    st.error(f"Database error: {e}")
+    customers = []
+
+if not customers:
+    st.info("No customers found.")
+else:
+    h0, h1, h2, h3, h4, h5, h6 = st.columns([1, 2, 2, 3, 2, 1.2, 1.2])
+    h0.markdown("**ID**"); h1.markdown("**First**"); h2.markdown("**Last**")
+    h3.markdown("**Email**"); h4.markdown("**Phone**"); h5.markdown("**Edit**"); h6.markdown("**Delete**")
+    st.divider()
+
+    for cust in customers:
+        cid, fn, ln, em, ph, ca = cust
+        c0, c1, c2, c3, c4, c5, c6 = st.columns([1, 2, 2, 3, 2, 1.2, 1.2])
+        c0.write(cid); c1.write(fn); c2.write(ln); c3.write(em); c4.write(ph or "—")
+
+        if c5.button("✏️ Edit", key=f"edit_c_{cid}"):
+            st.session_state["editing_customer"] = cid
+        if c6.button("🗑️ Delete", key=f"del_c_{cid}"):
+            st.session_state["confirm_del_customer"] = cid
+
+    # ── Edit Form ──────────────────────────────────────────────────────────────
+    editing_id = st.session_state.get("editing_customer")
+    if editing_id:
+        cust_data = next((c for c in customers if c[0] == editing_id), None)
+        if cust_data:
+            st.divider()
+            st.subheader(f"Edit Customer #{editing_id}")
+            with st.form("edit_customer"):
+                c1, c2 = st.columns(2)
+                new_fn = c1.text_input("First Name *", value=cust_data[1])
+                new_ln = c2.text_input("Last Name *", value=cust_data[2])
+                c3, c4 = st.columns(2)
+                new_email = c3.text_input("Email *", value=cust_data[3])
+                new_phone = c4.text_input("Phone", value=cust_data[4] or "")
+                save = st.form_submit_button("💾 Save Changes")
+                cancel = st.form_submit_button("Cancel")
+
+                if save:
+                    errors = []
+                    if not new_fn.strip(): errors.append("First name is required.")
+                    if not new_ln.strip(): errors.append("Last name is required.")
+                    if not new_email.strip(): errors.append("Email is required.")
+                    elif not EMAIL_REGEX.match(new_email.strip()): errors.append("Invalid email format.")
+                    if new_phone.strip() and not PHONE_REGEX.match(new_phone.strip()): errors.append("Phone must be 10 digits.")
+
+                    if errors:
+                        for e in errors: st.error(e)
+                    else:
+                        try:
+                            conn = get_connection()
+                            cur = conn.cursor()
+                            cur.execute(
+                                "UPDATE customers SET first_name=%s, last_name=%s, email=%s, phone=%s WHERE id=%s;",
+                                (new_fn.strip(), new_ln.strip(), new_email.strip().lower(), new_phone.strip() or None, editing_id)
+                            )
+                            conn.commit(); cur.close(); conn.close()
+                            del st.session_state["editing_customer"]
+                            st.success("Customer updated!"); st.rerun()
+                        except Exception as e:
+                            if "unique" in str(e).lower():
+                                st.error("That email is already in use.")
+                            else:
+                                st.error(f"Error: {e}")
+                if cancel:
+                    del st.session_state["editing_customer"]; st.rerun()
+
+    # ── Delete Confirmation ────────────────────────────────────────────────────
+    confirm_id = st.session_state.get("confirm_del_customer")
+    if confirm_id:
+        cust_data = next((c for c in customers if c[0] == confirm_id), None)
+        if cust_data:
+            st.divider()
+            st.warning(f"⚠️ Delete **{cust_data[1]} {cust_data[2]}**? This will also delete all their orders.")
+            c1, c2 = st.columns(2)
+            if c1.button("✅ Yes, Delete", key="yes_del_c"):
+                try:
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM customers WHERE id=%s;", (confirm_id,))
+                    conn.commit(); cur.close(); conn.close()
+                    del st.session_state["confirm_del_customer"]
+                    st.success("Customer deleted."); st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
+            if c2.button("❌ Cancel", key="no_del_c"):
+                del st.session_state["confirm_del_customer"]; st.rerun()
